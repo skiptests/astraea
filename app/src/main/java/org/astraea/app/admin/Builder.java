@@ -43,7 +43,6 @@ import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.admin.RemoveMembersFromConsumerGroupOptions;
 import org.apache.kafka.clients.admin.TransactionListing;
 import org.apache.kafka.common.ElectionType;
-import org.apache.kafka.common.TopicPartitionReplica;
 import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.errors.ElectionNotNeededException;
 import org.apache.kafka.common.quota.ClientQuotaAlteration;
@@ -602,10 +601,11 @@ public class Builder {
                                       e.getValue().stream()
                                           .map(
                                               r ->
-                                                  new org.apache.kafka.common.TopicPartitionReplica(
-                                                      e.getKey().topic(),
-                                                      e.getKey().partition(),
-                                                      r.broker())))
+                                                  TopicPartitionReplica.to(
+                                                      new TopicPartitionReplica(
+                                                          e.getKey().topic(),
+                                                          e.getKey().partition(),
+                                                          r.broker()))))
                               .collect(Collectors.toUnmodifiableList()))
                       .all()
                       .get());
@@ -824,10 +824,11 @@ public class Builder {
                           .collect(
                               Collectors.toMap(
                                   x ->
-                                      new TopicPartitionReplica(
-                                          partitions.iterator().next().topic(),
-                                          partitions.iterator().next().partition(),
-                                          x.getKey()),
+                                      TopicPartitionReplica.to(
+                                          new TopicPartitionReplica(
+                                              partitions.iterator().next().topic(),
+                                              partitions.iterator().next().partition(),
+                                              x.getKey())),
                                   Map.Entry::getValue)))
                   .all()
                   .get());

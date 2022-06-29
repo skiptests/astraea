@@ -31,7 +31,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import org.apache.kafka.common.TopicPartitionReplica;
 import org.astraea.app.argument.DurationField;
 import org.astraea.app.argument.NonEmptyStringField;
 import org.astraea.app.common.DataRate;
