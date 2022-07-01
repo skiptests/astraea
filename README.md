@@ -412,4 +412,9 @@ GET http://localhost:12345/groups
 GET http://localhost:12345/groups/g1
 ```
 
+
+## [Smooth dispatch](./docs/smooth_dispatcher.md)
+Based on the monitoring of cluster conditions, the load score of each node is calculated by processing the collected data, so as to arrange and plan the amount of data load that each node should bear.
+
 ## [Astraea Web Server 中文文件連結](./docs/web_server/README.md)
+
