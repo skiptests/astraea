@@ -90,6 +90,9 @@ public class Tracker implements Executor {
     System.out.printf("  average throughput: %.3f MB/second%n", result.averageBytes(duration));
     System.out.printf(
         "  current throughput: %s/second%n", DataUnit.Byte.of(result.totalCurrentBytes()));
+    System.out.printf(
+        "  current throughput (real): %s/second%n",
+        DataUnit.Byte.of(result.totalCurrentRealBytes()));
     System.out.println("  publish max latency: " + result.maxLatency + " ms");
     System.out.println("  publish mim latency: " + result.minLatency + " ms");
     for (int i = 0; i < result.bytes.size(); ++i) {
@@ -114,6 +117,9 @@ public class Tracker implements Executor {
     System.out.printf("  average throughput: %.3f MB/second%n", result.averageBytes(duration));
     System.out.printf(
         "  current throughput: %s/second%n", DataUnit.Byte.of(result.totalCurrentBytes()));
+    System.out.printf(
+        "  current throughput (real): %s/second%n",
+        DataUnit.Byte.of(result.totalCurrentRealBytes()));
     System.out.println("  end-to-end max latency: " + result.maxLatency + " ms");
     System.out.println("  end-to-end mim latency: " + result.minLatency + " ms");
     for (int i = 0; i < result.bytes.size(); ++i) {
@@ -140,6 +146,7 @@ public class Tracker implements Executor {
     var completed = 0;
     var bytes = new ArrayList<Long>();
     var currentBytes = new ArrayList<Long>();
+    var currentRealBytes = new ArrayList<Long>();
     var averageLatencies = new ArrayList<Double>();
     var max = 0L;
     var min = Long.MAX_VALUE;
@@ -147,6 +154,7 @@ public class Tracker implements Executor {
       completed += data.num();
       bytes.add(data.bytes());
       currentBytes.add(data.clearAndGetCurrentBytes());
+      currentRealBytes.add(data.currentRealBytes());
       averageLatencies.add(data.avgLatency());
       max = Math.max(max, data.max());
       min = Math.min(min, data.min());
@@ -155,6 +163,7 @@ public class Tracker implements Executor {
         completed,
         Collections.unmodifiableList(bytes),
         Collections.unmodifiableList(currentBytes),
+        Collections.unmodifiableList(currentRealBytes),
         Collections.unmodifiableList(averageLatencies),
         min,
         max);
@@ -164,6 +173,7 @@ public class Tracker implements Executor {
     public final long completedRecords;
     public final List<Long> bytes;
     public final List<Long> currentBytes;
+    public final List<Long> currentRealBytes;
     public final List<Double> averageLatencies;
     public final long minLatency;
     public final long maxLatency;
@@ -172,12 +182,14 @@ public class Tracker implements Executor {
         long completedRecords,
         List<Long> bytes,
         List<Long> currentBytes,
+        List<Long> currentRealBytes,
         List<Double> averageLatencies,
         long minLatency,
         long maxLatency) {
       this.completedRecords = completedRecords;
       this.bytes = bytes;
       this.currentBytes = currentBytes;
+      this.currentRealBytes = currentRealBytes;
       this.averageLatencies = averageLatencies;
       this.minLatency = minLatency;
       this.maxLatency = maxLatency;
@@ -193,6 +205,10 @@ public class Tracker implements Executor {
 
     long totalCurrentBytes() {
       return currentBytes.stream().mapToLong(i -> i).sum();
+    }
+
+    Long totalCurrentRealBytes() {
+      return currentRealBytes.stream().mapToLong(i -> i).sum();
     }
   }
 }

@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
-import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -97,32 +96,36 @@ public class Performance {
 
   static List<ProducerExecutor> producerExecutors(
       Performance.Argument argument,
-      List<? extends BiConsumer<Long, Integer>> observers,
+      List<Metrics> metrics,
       DataSupplier dataSupplier,
       Supplier<Integer> partitionSupplier) {
     return IntStream.range(0, argument.producers)
         .mapToObj(
-            index ->
-                ProducerExecutor.of(
-                    argument.topic,
-                    // Only transactional producer needs to process batch data
-                    argument.isolation() == Isolation.READ_COMMITTED ? argument.transactionSize : 1,
-                    argument.isolation() == Isolation.READ_COMMITTED
-                        ? Producer.builder()
-                            .configs(argument.configs())
-                            .bootstrapServers(argument.bootstrapServers())
-                            .compression(argument.compression)
-                            .partitionClassName(argument.partitioner)
-                            .buildTransactional()
-                        : Producer.builder()
-                            .configs(argument.configs())
-                            .bootstrapServers(argument.bootstrapServers())
-                            .compression(argument.compression)
-                            .partitionClassName(argument.partitioner)
-                            .build(),
-                    observers.get(index),
-                    partitionSupplier,
-                    dataSupplier))
+            index -> {
+              var producer =
+                  argument.isolation() == Isolation.READ_COMMITTED
+                      ? Producer.builder()
+                          .configs(argument.configs())
+                          .bootstrapServers(argument.bootstrapServers())
+                          .compression(argument.compression)
+                          .partitionClassName(argument.partitioner)
+                          .buildTransactional()
+                      : Producer.builder()
+                          .configs(argument.configs())
+                          .bootstrapServers(argument.bootstrapServers())
+                          .compression(argument.compression)
+                          .partitionClassName(argument.partitioner)
+                          .build();
+              metrics.get(index).putRealBytesMetric(producer.getMetric("outgoing-byte-total"));
+              return ProducerExecutor.of(
+                  argument.topic,
+                  // Only transactional producer needs to process batch data
+                  argument.isolation() == Isolation.READ_COMMITTED ? argument.transactionSize : 1,
+                  producer,
+                  metrics.get(index),
+                  partitionSupplier,
+                  dataSupplier);
+            })
         .collect(Collectors.toUnmodifiableList());
   }
 
@@ -210,9 +213,10 @@ public class Performance {
 
   static Executor consumerExecutor(
       Consumer<byte[], byte[]> consumer,
-      BiConsumer<Long, Integer> observer,
+      Metrics metrics,
       Manager manager,
       Supplier<Boolean> producerDone) {
+    metrics.putRealBytesMetric(consumer.getMetric("incoming-byte-total"));
     return new Executor() {
       @Override
       public State execute() {
@@ -223,7 +227,7 @@ public class Performance {
                   record -> {
                     // record ene-to-end latency, and record input byte (header and timestamp size
                     // excluded)
-                    observer.accept(
+                    metrics.accept(
                         System.currentTimeMillis() - record.timestamp(),
                         record.serializedKeySize() + record.serializedValueSize());
                   });

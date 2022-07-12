@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.Set;
 import org.astraea.app.admin.TopicPartition;
+import org.astraea.app.performance.MutableMetric;
 
 /** An interface for polling records. */
 public interface Consumer<Key, Value> extends AutoCloseable {
@@ -36,6 +37,10 @@ public interface Consumer<Key, Value> extends AutoCloseable {
    * @return records
    */
   Collection<Record<Key, Value>> poll(int recordCount, Duration timeout);
+
+  default MutableMetric<Double> getMetric(String metricName) {
+    return MutableMetric.create("null", () -> 0.0);
+  }
 
   /**
    * Wakeup the consumer. This method is thread-safe and is useful in particular to abort a long

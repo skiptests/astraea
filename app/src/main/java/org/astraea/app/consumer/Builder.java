@@ -26,6 +26,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.astraea.app.performance.MutableMetric;
 
 public abstract class Builder<Key, Value> {
   protected final Map<String, Object> configs = new HashMap<>();
@@ -125,6 +126,17 @@ public abstract class Builder<Key, Value> {
         kafkaConsumer.poll(Duration.ofMillis(remaining)).forEach(r -> records.add(Record.of(r)));
       }
       return Collections.unmodifiableList(records);
+    }
+
+    @Override
+    public MutableMetric<Double> getMetric(String metricName) {
+      var kafkaMetric =
+          kafkaConsumer.metrics().entrySet().stream()
+              .filter(e -> e.getKey().name().equals(metricName))
+              .findFirst()
+              .orElseThrow()
+              .getValue();
+      return MutableMetric.of(kafkaMetric);
     }
 
     @Override

@@ -34,6 +34,7 @@ import org.apache.kafka.common.errors.AuthorizationException;
 import org.apache.kafka.common.errors.OutOfOrderSequenceException;
 import org.apache.kafka.common.errors.ProducerFencedException;
 import org.astraea.app.admin.Compression;
+import org.astraea.app.performance.MutableMetric;
 
 public class Builder<Key, Value> {
   private final Map<String, Object> configs = new HashMap<>();
@@ -144,6 +145,17 @@ public class Builder<Key, Value> {
 
     private BaseProducer(org.apache.kafka.clients.producer.Producer<Key, Value> kafkaProducer) {
       this.kafkaProducer = kafkaProducer;
+    }
+
+    @Override
+    public MutableMetric<Double> getMetric(String metricName) {
+      var kafkaMetric =
+          kafkaProducer.metrics().entrySet().stream()
+              .filter(e -> e.getKey().name().equals(metricName))
+              .findFirst()
+              .orElseThrow()
+              .getValue();
+      return MutableMetric.of(kafkaMetric);
     }
 
     @Override
