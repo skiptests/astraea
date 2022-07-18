@@ -16,7 +16,10 @@
  */
 package org.astraea.app.admin;
 
+import java.math.BigDecimal;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -31,7 +34,9 @@ import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.AlterConfigOp;
 import org.apache.kafka.clients.admin.ConfigEntry;
 import org.apache.kafka.clients.admin.ConsumerGroupListing;
 import org.apache.kafka.clients.admin.ListTopicsOptions;
@@ -52,6 +57,8 @@ import org.apache.kafka.common.quota.ClientQuotaAlteration;
 import org.apache.kafka.common.quota.ClientQuotaEntity;
 import org.apache.kafka.common.quota.ClientQuotaFilter;
 import org.apache.kafka.common.quota.ClientQuotaFilterComponent;
+import org.astraea.app.common.DataRate;
+import org.astraea.app.common.DataUnit;
 import org.astraea.app.common.Utils;
 
 public class Builder {
@@ -642,6 +649,11 @@ public class Builder {
                           Collections.unmodifiableSet(e.getValue().getKey()),
                           Collections.unmodifiableSet(e.getValue().getValue()))));
     }
+
+    @Override
+    public ReplicationThrottler replicationThrottler() {
+      return new ReplicationThrottlerImpl(admin);
+    }
   }
 
   private static class ConfigImpl implements Config {
@@ -975,6 +987,189 @@ public class Builder {
                         .get());
         }
       };
+    }
+  }
+
+  private static class ReplicationThrottlerImpl implements ReplicationThrottler {
+
+    private final org.apache.kafka.clients.admin.Admin admin;
+
+    ReplicationThrottlerImpl(org.apache.kafka.clients.admin.Admin admin) {
+      this.admin = admin;
+    }
+
+    @Override
+    public void applyLogThrottle(ReplicaType type, TopicThrottleSetting setting) {
+      if (setting.allThrottled()) allThrottled(setting.topicName(), type);
+      else if (setting.partialThrottled())
+        partialThrottled(setting.topicName(), type, setting.throttledLogs());
+      else if (setting.notThrottled()) removeThrottle(setting.topicName(), type);
+      else throw new IllegalStateException("This code path should never triggered");
+    }
+
+    private void allThrottled(String topic, ReplicaType config) {
+      var configEntry = new ConfigEntry(config.replicationThrottleConfigName, "*");
+      var alterConfigOp = new AlterConfigOp(configEntry, AlterConfigOp.OpType.SET);
+      var configResource = new ConfigResource(ConfigResource.Type.TOPIC, topic);
+      Utils.packException(
+          () ->
+              admin
+                  .incrementalAlterConfigs(Map.of(configResource, List.of(alterConfigOp)))
+                  .all()
+                  .get());
+    }
+
+    private void partialThrottled(
+        String topic,
+        ReplicaType config,
+        Set<org.astraea.app.admin.TopicPartitionReplica> logToThrottle) {
+      if (logToThrottle.isEmpty()) throw new IllegalArgumentException();
+
+      boolean allTopicNameEquals = logToThrottle.stream().allMatch(x -> x.topic().equals(topic));
+      if (!allTopicNameEquals)
+        throw new IllegalArgumentException(
+            "All the given log must belongs to the topic specified in argument");
+
+      var configMap =
+          logToThrottle.stream()
+              .collect(Collectors.groupingBy(org.astraea.app.admin.TopicPartitionReplica::topic))
+              .entrySet()
+              .stream()
+              .map(
+                  entry -> {
+                    var topicName = entry.getKey();
+                    var configValue =
+                        entry.getValue().stream()
+                            .map(x -> String.format("%d:%d", x.partition(), x.brokerId()))
+                            .collect(Collectors.joining(","));
+                    var configEntry =
+                        new ConfigEntry(config.replicationThrottleConfigName, configValue);
+                    var alterConfigOp = new AlterConfigOp(configEntry, AlterConfigOp.OpType.SET);
+                    var configResource = new ConfigResource(ConfigResource.Type.TOPIC, topicName);
+                    return Map.entry(
+                        configResource, (Collection<AlterConfigOp>) List.of(alterConfigOp));
+                  })
+              .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+      Utils.packException(() -> admin.incrementalAlterConfigs(configMap).all().get());
+    }
+
+    private void removeThrottle(String topic, ReplicaType config) {
+      var configEntry = new ConfigEntry(config.replicationThrottleConfigName, "");
+      var alterConfigOp = new AlterConfigOp(configEntry, AlterConfigOp.OpType.DELETE);
+      var configResource = new ConfigResource(ConfigResource.Type.TOPIC, topic);
+      Utils.packException(
+          () ->
+              admin
+                  .incrementalAlterConfigs(Map.of(configResource, List.of(alterConfigOp)))
+                  .all()
+                  .get());
+    }
+
+    @Override
+    public void limitBrokerBandwidth(Map<Integer, BrokerThrottleRate> brokerThrottleRateMap) {
+      var alterBrokerBandwidthThrottle =
+          brokerThrottleRateMap.entrySet().stream()
+              .map(
+                  entry -> {
+                    var leaderThrottleConfig = ReplicaType.Leader.replicationThrottleRateConfigName;
+                    var followerThrottleConfig =
+                        ReplicaType.Follower.replicationThrottleRateConfigName;
+                    var brokerId = entry.getKey();
+                    var rate = entry.getValue();
+                    var configResource =
+                        new ConfigResource(ConfigResource.Type.BROKER, Integer.toString(brokerId));
+                    var configEntries =
+                        Stream.of(
+                                rate.leaderThrottle()
+                                    .map(x -> x.toBigDecimal(DataUnit.Byte, ChronoUnit.SECONDS))
+                                    .map(BigDecimal::longValueExact)
+                                    .map(
+                                        x ->
+                                            new ConfigEntry(leaderThrottleConfig, Long.toString(x)))
+                                    .map(x -> new AlterConfigOp(x, AlterConfigOp.OpType.SET))
+                                    .orElse(
+                                        new AlterConfigOp(
+                                            new ConfigEntry(leaderThrottleConfig, ""),
+                                            AlterConfigOp.OpType.DELETE)),
+                                rate.followerThrottle()
+                                    .map(x -> x.toBigDecimal(DataUnit.Byte, ChronoUnit.SECONDS))
+                                    .map(BigDecimal::longValueExact)
+                                    .map(
+                                        x ->
+                                            new ConfigEntry(
+                                                followerThrottleConfig, Long.toString(x)))
+                                    .map(x -> new AlterConfigOp(x, AlterConfigOp.OpType.SET))
+                                    .orElse(
+                                        new AlterConfigOp(
+                                            new ConfigEntry(followerThrottleConfig, ""),
+                                            AlterConfigOp.OpType.DELETE)))
+                            .collect(Collectors.toUnmodifiableList());
+                    return Map.entry(configResource, (Collection<AlterConfigOp>) configEntries);
+                  })
+              .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+
+      Utils.packException(
+          () -> admin.incrementalAlterConfigs(alterBrokerBandwidthThrottle).all().get());
+    }
+
+    @Override
+    public Map<ReplicaType, TopicThrottleSetting> getThrottleSetting(String topicName) {
+      var configResource = new ConfigResource(ConfigResource.Type.TOPIC, topicName);
+      var configs =
+          Utils.packException(() -> admin.describeConfigs(List.of(configResource)).all().get());
+
+      String leaderValue =
+          configs.get(configResource).get(ReplicaType.Leader.replicationThrottleConfigName).value();
+      String followerValue =
+          configs
+              .get(configResource)
+              .get(ReplicaType.Follower.replicationThrottleConfigName)
+              .value();
+
+      Function<String, TopicThrottleSetting> convert =
+          (s) ->
+              s.isEmpty()
+                  ? TopicThrottleSetting.noThrottle(topicName)
+                  : s.equals("*")
+                      ? TopicThrottleSetting.allLogThrottled(topicName)
+                      : TopicThrottleSetting.someLogThrottled(
+                          Arrays.stream(s.split(","))
+                              .map(x -> x.split(":"))
+                              .map(x -> new int[] {Integer.parseInt(x[0]), Integer.parseInt(x[1])})
+                              .map(
+                                  x ->
+                                      new org.astraea.app.admin.TopicPartitionReplica(
+                                          topicName, x[0], x[1]))
+                              .collect(Collectors.toUnmodifiableSet()));
+
+      return Map.of(
+          ReplicaType.Leader, convert.apply(leaderValue),
+          ReplicaType.Follower, convert.apply(followerValue));
+    }
+
+    @Override
+    public BrokerThrottleRate getThrottleBandwidth(int brokerId) {
+      var configResource =
+          new ConfigResource(ConfigResource.Type.BROKER, Integer.toString(brokerId));
+      var configs =
+          Utils.packException(() -> admin.describeConfigs(List.of(configResource)).all().get())
+              .get(configResource);
+
+      DataRate leaderDataRate =
+          Optional.ofNullable(configs.get(ReplicaType.Leader.replicationThrottleRateConfigName))
+              .map(ConfigEntry::value)
+              .map(Long::parseLong)
+              .map(rate -> DataRate.of(rate, DataUnit.Byte, ChronoUnit.SECONDS))
+              .orElse(null);
+
+      DataRate followerDataRate =
+          Optional.ofNullable(configs.get(ReplicaType.Follower.replicationThrottleRateConfigName))
+              .map(ConfigEntry::value)
+              .map(Long::parseLong)
+              .map(rate -> DataRate.of(rate, DataUnit.Byte, ChronoUnit.SECONDS))
+              .orElse(null);
+
+      return BrokerThrottleRate.of(leaderDataRate, followerDataRate);
     }
   }
 }
