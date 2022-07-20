@@ -43,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import org.astraea.app.admin.TopicPartition;
 import org.astraea.app.argument.DurationField;
+import org.astraea.app.common.Cache;
 import org.astraea.app.common.Utils;
 import org.astraea.app.consumer.Builder;
 import org.astraea.app.consumer.Consumer;
@@ -67,10 +68,22 @@ public class RecordHandler implements Handler {
   final String bootstrapServers;
   // visible for testing
   final Producer<byte[], byte[]> producer;
+  private final Cache<String, Producer<byte[], byte[]>> transactionalProducerCache;
 
   RecordHandler(String bootstrapServers) {
     this.bootstrapServers = requireNonNull(bootstrapServers);
     this.producer = Producer.builder().bootstrapServers(bootstrapServers).build();
+    this.transactionalProducerCache =
+        Cache.<String, Producer<byte[], byte[]>>builder(
+                transactionId ->
+                    Producer.builder()
+                        .transactionId(transactionId)
+                        .bootstrapServers(bootstrapServers)
+                        .buildTransactional())
+            .maxCapacity(100)
+            .expireAfterAccess(Duration.ofMinutes(10))
+            .removalListener((k, v) -> v.close())
+            .build();
   }
 
   @Override
@@ -149,17 +162,7 @@ public class RecordHandler implements Handler {
     }
 
     var producer =
-        request
-            .get(TRANSACTION_ID)
-            .map(
-                // TODO: Find a way to cache transactional producer
-                // (https://github.com/skiptests/astraea/issues/473)
-                transactionId ->
-                    Producer.builder()
-                        .transactionId(transactionId)
-                        .bootstrapServers(bootstrapServers)
-                        .buildTransactional())
-            .orElse(this.producer);
+        request.get(TRANSACTION_ID).map(transactionalProducerCache::get).orElse(this.producer);
 
     var result =
         CompletableFuture.supplyAsync(
