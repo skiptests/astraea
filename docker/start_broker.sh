@@ -257,6 +257,15 @@ function setLogDirs() {
   echo $logConfigs >>"$BROKER_PROPERTIES"
 }
 
+function generateResourceConstraintCommand() {
+    if [[ -n "$MEMORY" ]]; then
+        echo "--memory=$MEMORY"
+    fi
+    if [[ -n "$CPUS" ]]; then
+        echo "--cpus=$CPUS"
+    fi
+}
+
 function generateJmxConfigMountCommand() {
     if [[ "$JMX_CONFIG_FILE" != "" ]]; then
         echo "--mount type=bind,source=$JMX_CONFIG_FILE,target=$JMX_CONFIG_FILE_IN_CONTAINER_PATH"
@@ -361,6 +370,7 @@ docker run -d --init \
   -e KAFKA_JMX_OPTS="$JMX_OPTS" \
   -e KAFKA_OPTS="-javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent-${EXPORTER_VERSION}.jar=$EXPORTER_PORT:$JMX_CONFIG_FILE_IN_CONTAINER_PATH" \
   -v $BROKER_PROPERTIES:/tmp/broker.properties:ro \
+  $(generateResourceConstraintCommand) \
   $(generateJmxConfigMountCommand) \
   $(generateDataFolderMountCommand) \
   -p $BROKER_PORT:9092 \
