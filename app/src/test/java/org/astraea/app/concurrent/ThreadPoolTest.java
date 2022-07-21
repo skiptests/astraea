@@ -17,6 +17,8 @@
 package org.astraea.app.concurrent;
 
 import java.time.Duration;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.astraea.app.common.Utils;
 import org.junit.jupiter.api.Assertions;
@@ -87,6 +89,74 @@ public class ThreadPoolTest {
       Assertions.assertEquals(ThreadPool.EMPTY, empty);
       Assertions.assertEquals(0, empty.size());
       Assertions.assertTrue(empty.isClosed());
+    }
+  }
+
+  @Test
+  void testStop() {
+    var stop1 = new AtomicBoolean(false);
+    var stop2 = new AtomicBoolean(false);
+    var stop3 = new AtomicBoolean(false);
+    Executor e1 = createExecutor(stop1, new AtomicBoolean());
+    Executor e2 = createExecutor(stop2, new AtomicBoolean());
+    Executor e3 = createExecutor(stop3, new AtomicBoolean());
+    try (var threadPool = ThreadPool.builder().executors(Set.of(e1, e2, e3)).build()) {
+      Assertions.assertFalse(stop1.get());
+      Assertions.assertFalse(stop2.get());
+      Assertions.assertFalse(stop3.get());
+      threadPool.stop(e1);
+      Utils.sleep(Duration.ofMillis(10));
+      Assertions.assertTrue(stop1.get());
+      Assertions.assertFalse(stop2.get());
+      Assertions.assertFalse(stop3.get());
+    }
+  }
+
+  private Executor createExecutor(AtomicBoolean stop, AtomicBoolean execute) {
+    return new Executor() {
+      @Override
+      public State execute() {
+        try {
+          execute.set(true);
+          return State.RUNNING;
+        } catch (Exception e) {
+          // swallow
+        }
+        return State.DONE;
+      }
+
+      @Override
+      public void close() {
+        execute.set(false);
+        stop.set(true);
+      }
+    };
+  }
+
+  @Test
+  void testPutAndExecute() {
+    var execute1 = new AtomicBoolean(false);
+    var execute2 = new AtomicBoolean(false);
+    var execute3 = new AtomicBoolean(false);
+    Executor e1 = createExecutor(new AtomicBoolean(), execute1);
+    Executor e2 = createExecutor(new AtomicBoolean(), execute2);
+    Executor e3 = createExecutor(new AtomicBoolean(), execute3);
+    try (var threadPool = ThreadPool.builder().executor(e1).executor(e2).build()) {
+      Utils.sleep(Duration.ofMillis(10));
+      Assertions.assertTrue(execute1.get());
+      Assertions.assertTrue(execute2.get());
+      Assertions.assertFalse(execute3.get());
+      threadPool.putAndExecute(e3);
+      Utils.sleep(Duration.ofMillis(10));
+      Assertions.assertTrue(execute1.get());
+      Assertions.assertTrue(execute2.get());
+      Assertions.assertFalse(execute3.get());
+      Utils.sleep(Duration.ofMillis(10));
+      threadPool.stop(e1);
+      Utils.sleep(Duration.ofMillis(10));
+      Assertions.assertFalse(execute1.get());
+      Assertions.assertTrue(execute2.get());
+      Assertions.assertTrue(execute3.get());
     }
   }
 }

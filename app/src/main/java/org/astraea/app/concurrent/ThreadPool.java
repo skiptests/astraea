@@ -18,18 +18,20 @@ package org.astraea.app.concurrent;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.CountDownLatch;
+import java.util.Set;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * This class offers a simple way to manage the threads. All threads added to builder are not
  * executing right now. Instead, all threads are starting when the pool is built.
  */
 public interface ThreadPool extends AutoCloseable {
-
   // nothing to run.
   ThreadPool EMPTY =
       new ThreadPool() {
@@ -62,12 +64,19 @@ public interface ThreadPool extends AutoCloseable {
   /** @return the number of threads */
   int size();
 
+  /** put the executor into the thread pool and execute it. */
+  default void putAndExecute(Executor executor) {}
+
+  /** stop the executor which you specify. */
+  default void stop(Executor executor) {}
+
   static Builder builder() {
     return new Builder();
   }
 
   class Builder {
     private final List<Executor> executors = new ArrayList<>();
+    private final Set<Executor> stopExecutors = new HashSet<>();
 
     private Builder() {}
 
@@ -83,26 +92,9 @@ public interface ThreadPool extends AutoCloseable {
     public ThreadPool build() {
       if (executors.isEmpty()) return EMPTY;
       var closed = new AtomicBoolean(false);
-      var latch = new CountDownLatch(executors.size());
+      var tasks = new AtomicInteger(executors.size());
       var service = Executors.newFixedThreadPool(executors.size());
-      executors.forEach(
-          executor ->
-              service.execute(
-                  () -> {
-                    try {
-                      while (!closed.get()) {
-                        if (executor.execute() == State.DONE) break;
-                      }
-                    } catch (InterruptedException e) {
-                      // swallow
-                    } finally {
-                      try {
-                        executor.close();
-                      } finally {
-                        latch.countDown();
-                      }
-                    }
-                  }));
+      executors.forEach(executor -> service.execute(() -> isDone(closed, tasks, executor)));
       return new ThreadPool() {
         @Override
         public void close() {
@@ -115,7 +107,9 @@ public interface ThreadPool extends AutoCloseable {
         @Override
         public void waitAll() {
           try {
-            latch.await();
+            while (!service.awaitTermination(2000, TimeUnit.MILLISECONDS)) {
+              if (tasks.get() == 0) break;
+            }
           } catch (InterruptedException e) {
             // swallow
           }
@@ -130,7 +124,44 @@ public interface ThreadPool extends AutoCloseable {
         public int size() {
           return executors.size();
         }
+
+        @Override
+        public void putAndExecute(Executor executor) {
+          tasks.getAndUpdate(
+              taskNumber -> {
+                service.execute(() -> isDone(closed, tasks, executor));
+                return taskNumber + 1;
+              });
+        }
+
+        @Override
+        public void stop(Executor executor) {
+          tasks.getAndUpdate(
+              taskNumber -> {
+                if (taskNumber <= 0) return taskNumber;
+                else {
+                  stopExecutors.add(executor);
+                  return taskNumber - 1;
+                }
+              });
+        }
       };
+    }
+
+    private void isDone(AtomicBoolean closed, AtomicInteger tasks, Executor executor) {
+      try {
+        while (!closed.get()) {
+          if ((executor.execute() == State.DONE) || (stopExecutors.remove(executor))) break;
+        }
+      } catch (InterruptedException e) {
+        // swallow
+      } finally {
+        try {
+          executor.close();
+        } finally {
+          tasks.decrementAndGet();
+        }
+      }
     }
   }
 }
