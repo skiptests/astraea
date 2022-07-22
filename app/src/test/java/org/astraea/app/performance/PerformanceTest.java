@@ -20,9 +20,13 @@ import com.beust.jcommander.ParameterException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import org.astraea.app.admin.Admin;
 import org.astraea.app.admin.TopicPartition;
@@ -31,6 +35,7 @@ import org.astraea.app.common.Utils;
 import org.astraea.app.concurrent.Executor;
 import org.astraea.app.concurrent.State;
 import org.astraea.app.consumer.Consumer;
+import org.astraea.app.consumer.ConsumerRebalanceListener;
 import org.astraea.app.consumer.Isolation;
 import org.astraea.app.producer.Producer;
 import org.astraea.app.service.RequireBrokerCluster;
@@ -106,7 +111,9 @@ public class PerformanceTest extends RequireBrokerCluster {
             Consumer.forTopics(Set.of(topicName)).bootstrapServers(bootstrapServers()).build(),
             metrics,
             new Manager(param, List.of(), List.of()),
-            () -> false)) {
+            () -> false,
+            new AtomicBoolean(),
+            new AtomicBoolean())) {
       executor.execute();
 
       Assertions.assertEquals(0, metrics.num());
@@ -116,10 +123,23 @@ public class PerformanceTest extends RequireBrokerCluster {
         producer.sender().topic(topicName).value(new byte[1024]).run().toCompletableFuture().get();
       }
       executor.execute();
-
       Assertions.assertEquals(1, metrics.num());
       Assertions.assertNotEquals(1024, metrics.bytes());
     }
+  }
+
+  @Test
+  void testRebalanceListener() {
+    Map<Integer, ConcurrentLinkedQueue<Duration>> generationIDTime = new ConcurrentSkipListMap<>();
+    CountDownLatch latch = new CountDownLatch(0);
+    ConsumerRebalanceListener listener = Performance.rebalanceListener(generationIDTime, latch);
+    listener.onPartitionsRevoked(Set.of());
+    Utils.sleep(Duration.ofMillis(1000));
+    listener.onPartitionAssigned(Set.of());
+    Assertions.assertFalse(generationIDTime.containsKey(0));
+    Assertions.assertTrue(generationIDTime.containsKey(1));
+    Assertions.assertFalse(generationIDTime.containsKey(2));
+    Assertions.assertEquals(1, generationIDTime.get(1).peek().getSeconds());
   }
 
   @Test

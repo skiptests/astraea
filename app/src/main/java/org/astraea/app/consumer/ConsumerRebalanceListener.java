@@ -32,11 +32,17 @@ public interface ConsumerRebalanceListener {
    */
   void onPartitionAssigned(Set<TopicPartition> partitions);
 
+  default void onPartitionsRevoked(Set<TopicPartition> partitions) {}
+  ;
+
   static org.apache.kafka.clients.consumer.ConsumerRebalanceListener of(
       ConsumerRebalanceListener listener) {
     return new org.apache.kafka.clients.consumer.ConsumerRebalanceListener() {
       @Override
-      public void onPartitionsRevoked(Collection<org.apache.kafka.common.TopicPartition> ignore) {}
+      public void onPartitionsRevoked(Collection<org.apache.kafka.common.TopicPartition> ignore) {
+        listener.onPartitionsRevoked(
+            ignore.stream().map(TopicPartition::from).collect(Collectors.toSet()));
+      }
 
       @Override
       public void onPartitionsAssigned(

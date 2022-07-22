@@ -24,8 +24,13 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -48,6 +53,7 @@ import org.astraea.app.concurrent.Executor;
 import org.astraea.app.concurrent.State;
 import org.astraea.app.concurrent.ThreadPool;
 import org.astraea.app.consumer.Consumer;
+import org.astraea.app.consumer.ConsumerRebalanceListener;
 import org.astraea.app.consumer.Isolation;
 import org.astraea.app.producer.Producer;
 
@@ -138,7 +144,9 @@ public class Performance {
       Utils.waitFor(() -> topicAdmin.topicNames().contains(param.topic));
       partitions = new ArrayList<>(partition(param, topicAdmin));
     }
-
+    var Killed = new AtomicBoolean(false);
+    var Restarted = new AtomicBoolean(false);
+    Map<Integer, ConcurrentLinkedQueue<Duration>> generationIDTime = new ConcurrentSkipListMap<>();
     var consumerMetrics =
         IntStream.range(0, param.consumers)
             .mapToObj(i -> new Metrics())
@@ -169,6 +177,7 @@ public class Performance {
                 ReportFormat.createFileWriter(
                     param.reportFormat, param.CSVPath, manager, producerDone, tracker))
             : List.of();
+    var monkeyExecutor = new MonkeyExecutor(param, Killed, Restarted, producerDone, manager);
 
     try (var consumersPool =
         ThreadPool.builder()
@@ -183,38 +192,109 @@ public class Performance {
                                     .configs(param.configs())
                                     .isolation(param.isolation())
                                     .consumerRebalanceListener(
-                                        ignore -> consumerBalancerLatch.countDown())
+                                        rebalanceListener(generationIDTime, consumerBalancerLatch))
                                     .build(),
                                 consumerMetrics.get(i),
                                 manager,
-                                producerDone))
+                                producerDone,
+                                Killed,
+                                Restarted))
                     .collect(Collectors.toUnmodifiableList()))
             .build()) {
       // make sure all consumers get their partition assignment
       consumerBalancerLatch.await();
-
       try (var threadPool =
           ThreadPool.builder()
               .executors(producerExecutors)
               .executor(tracker)
               .executors(fileWriter)
+              .executor(monkeyExecutor)
               .build()) {
         threadPool.waitAll();
         consumersPool.waitAll();
+        printTime(generationIDTime);
         return new Result(param.topic);
       }
     }
+  }
+
+  static ConsumerRebalanceListener rebalanceListener(
+      Map<Integer, ConcurrentLinkedQueue<Duration>> generationIDTime,
+      CountDownLatch consumerBalancerLatch) {
+    return new ConsumerRebalanceListener() {
+      private long revokedTime = System.currentTimeMillis();
+      private int generation = 0;
+
+      @Override
+      public void onPartitionAssigned(Set<TopicPartition> partitions) {
+        generation += 1;
+        Duration downTime = Duration.ofMillis(System.currentTimeMillis() - revokedTime);
+        generationIDTime.putIfAbsent(generation, new ConcurrentLinkedQueue<>());
+        generationIDTime.get(generation).add(downTime);
+        consumerBalancerLatch.countDown();
+      }
+
+      @Override
+      public void onPartitionsRevoked(Set<TopicPartition> partitions) {
+        revokedTime = System.currentTimeMillis();
+      }
+    };
+  }
+
+  private static void printTime(Map<Integer, ConcurrentLinkedQueue<Duration>> generationIDTime) {
+    generationIDTime.forEach(
+        (generationId, rebalanceTimes) -> {
+          System.out.println("generationID #" + generationId);
+          final int size = rebalanceTimes.size();
+
+          double avgTime =
+              (double) rebalanceTimes.stream().mapToLong(Duration::toMillis).sum() / size;
+          System.out.printf("Average time : %.2fms\n", avgTime);
+        });
+  }
+
+  private static boolean isDead(AtomicBoolean kill, boolean pause) {
+    if (pause) {
+      return true;
+    }
+    return kill.getAndSet(false);
+  }
+
+  private static boolean isRestarted(AtomicBoolean restart, boolean pause) {
+    if (!pause) {
+      return false;
+    }
+    return !restart.getAndSet(false);
+  }
+
+  private static boolean finished(Supplier<Boolean> producerDone, Manager manager) {
+    return producerDone.get() && manager.consumedDone();
   }
 
   static Executor consumerExecutor(
       Consumer<byte[], byte[]> consumer,
       BiConsumer<Long, Integer> observer,
       Manager manager,
-      Supplier<Boolean> producerDone) {
+      Supplier<Boolean> producerDone,
+      AtomicBoolean killed,
+      AtomicBoolean restarted) {
     return new Executor() {
+      // if pause is true, the consumer thread wouldn't poll messages.
+      private boolean pause = false;
+
       @Override
       public State execute() {
         try {
+          pause = isDead(killed, pause);
+          pause = isRestarted(restarted, pause);
+          if (pause) {
+            if (finished(producerDone, manager)) {
+              return State.DONE;
+            }
+            TimeUnit.SECONDS.sleep(
+                5); // the value must be higher than consumer `max.poll.interval.ms` configuration
+            return State.RUNNING;
+          }
           consumer
               .poll(Duration.ofSeconds(10))
               .forEach(
@@ -227,7 +307,7 @@ public class Performance {
                   });
           // Consumer reached the record upperbound or consumed all the record producer produced.
           return producerDone.get() && manager.consumedDone() ? State.DONE : State.RUNNING;
-        } catch (WakeupException ignore) {
+        } catch (WakeupException | InterruptedException ignore) {
           // Stop polling and being ready to clean up
           return State.DONE;
         }
@@ -383,6 +463,11 @@ public class Performance {
         description = "Output format for the report",
         converter = ReportFormat.ReportFormatConverter.class)
     ReportFormat reportFormat = ReportFormat.CSV;
+
+    @Parameter(
+        names = {"--monkey.freq"},
+        description = "Bound the time of kill or restart consumer in the range")
+    int monkeyFreq = 20;
   }
 
   public static class Result {
