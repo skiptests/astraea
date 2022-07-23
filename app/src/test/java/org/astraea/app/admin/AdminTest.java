@@ -1109,4 +1109,37 @@ public class AdminTest extends RequireBrokerCluster {
       Assertions.assertEquals(0, admin.reassignments(Set.of(topicName)).size());
     }
   }
+
+  @Test
+  void testDeleteRecord() {
+    var topicName = Utils.randomString(10);
+    try (var admin = Admin.of(bootstrapServers())) {
+      admin.creator().topic(topicName).numberOfPartitions(3).numberOfReplicas((short) 3).create();
+      var deleteRecords = admin.deleteRecords(Map.of(TopicPartition.of(topicName, 0), 0L));
+
+      Assertions.assertEquals(1, deleteRecords.size());
+      Assertions.assertEquals(0, deleteRecords.values().stream().findFirst().get().lowWatermark());
+
+      try (var producer = Producer.of(bootstrapServers())) {
+        var senders =
+            Stream.of(0, 0, 0, 1, 1)
+                .map(x -> producer.sender().topic(topicName).partition(x).value(new byte[100]))
+                .collect(Collectors.toList());
+        producer.send(senders);
+        producer.flush();
+      }
+
+      deleteRecords =
+          admin.deleteRecords(
+              Map.of(TopicPartition.of(topicName, 0), 2L, TopicPartition.of(topicName, 1), 1L));
+      Assertions.assertEquals(2, deleteRecords.size());
+      Assertions.assertEquals(2, deleteRecords.get(TopicPartition.of(topicName, 0)).lowWatermark());
+      Assertions.assertEquals(1, deleteRecords.get(TopicPartition.of(topicName, 1)).lowWatermark());
+
+      var offsets = admin.offsets();
+      Assertions.assertEquals(2, offsets.get(TopicPartition.of(topicName, 0)).earliest());
+      Assertions.assertEquals(1, offsets.get(TopicPartition.of(topicName, 1)).earliest());
+      Assertions.assertEquals(0, offsets.get(TopicPartition.of(topicName, 2)).earliest());
+    }
+  }
 }

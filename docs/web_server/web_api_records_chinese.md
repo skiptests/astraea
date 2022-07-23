@@ -6,6 +6,7 @@
   - [DISTANCE_FROM_LATEST](#DISTANCE_FROM_LATEST)
   - [DISTANCE_FROM_BEGINNING](#DISTANCE_FROM_BEGINNING)
   - [SEEK_TO](#SEEK_TO)
+- [刪除資料](#刪除資料)
 
 ## 傳送資料
 ```shell
@@ -263,4 +264,22 @@ JSON Response
     }
   ]
 }
+```
+
+## 刪除資料
+```shell
+DELETE /records/{topic}
+```
+
+Request 參數
+
+| 名稱        | 說明                            | 預設值           |
+|-----------|-------------------------------|---------------|
+| offset    | long (選填) 刪除指定offset之前的record | latest offset |
+| partition | int (選填) 指定partition          | 所有partition   |
+
+cURL 範例
+
+```shell
+curl -X DELETE "http://localhost:8001/records/mytopic?partition=5&offset=2"
 ```
