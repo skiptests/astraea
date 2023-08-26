@@ -13,3 +13,4 @@ Astraea Balancer 是一個 Kafka 節點端的負載優化框架，其透過使�
 * Astraea Balancer 實驗報告
   * [實驗報告#1](experiment_1.md)
   * [實驗報告#2](experiment_2.md)
+  * [實驗報告#3 (Data Skew 情境)](experiment_3.md)
