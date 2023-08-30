@@ -10,6 +10,14 @@ Astraea Balancer 是一個 Kafka 節點端的負載優化框架，其透過使�
 * Astraea Balancer 使用文件
   * [WebService](../web_server/web_api_balancer_chinese.md)
   * [GUI](../gui/balancer/README.md)
+  
 * Astraea Balancer 實驗報告
   * [實驗報告#1](experiment_1.md)
   * [實驗報告#2](experiment_2.md)
+  
+  
+
+## 成本估計
+
+* [Partition Leader限制實驗](./experiment_partitionLeader.md): kafka partition的搬移過程中會產生一些成本，在搬移前先計算出搬移過程中broker會持有多少partition leader，並且對其做限制，確保broker不會持有超出限制的leader數量
+
