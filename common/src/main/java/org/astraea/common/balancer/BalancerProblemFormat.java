@@ -42,6 +42,7 @@ public class BalancerProblemFormat {
           "org.astraea.common.cost.RecordSizeCost",
           "org.astraea.common.cost.ReplicaNumberCost",
           "org.astraea.common.cost.ReplicaLeaderSizeCost",
+          "org.astraea.common.cost.PartitionMigrateTimeCost",
           "org.astraea.common.cost.BrokerDiskSpaceCost");
 
   public AlgorithmConfig parse() {

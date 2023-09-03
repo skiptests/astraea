@@ -16,8 +16,10 @@
  */
 package org.astraea.common.cost;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -26,17 +28,19 @@ import org.astraea.common.admin.Broker;
 import org.astraea.common.admin.ClusterInfo;
 import org.astraea.common.admin.Replica;
 import org.astraea.common.metrics.ClusterBean;
+import org.astraea.common.metrics.HasBeanObject;
+import org.astraea.common.metrics.broker.HasMaxRate;
 
 public class MigrationCost {
 
   public final String name;
-
   public final Map<Integer, Long> brokerCosts;
   public static final String TO_SYNC_BYTES = "record size to sync (bytes)";
   public static final String TO_FETCH_BYTES = "record size to fetch (bytes)";
   public static final String REPLICA_LEADERS_TO_ADDED = "leader number to add";
   public static final String REPLICA_LEADERS_TO_REMOVE = "leader number to remove";
   public static final String CHANGED_REPLICAS = "changed replicas";
+  public static final String MIGRATION_ELAPSED_TIME = "migration elapsed time";
 
   public static List<MigrationCost> migrationCosts(
       ClusterInfo before, ClusterInfo after, ClusterBean clusterBean) {
@@ -48,6 +52,9 @@ public class MigrationCost {
     return List.of(
         new MigrationCost(TO_SYNC_BYTES, migrateInBytes),
         new MigrationCost(TO_FETCH_BYTES, migrateOutBytes),
+        new MigrationCost(CHANGED_REPLICAS, migrateReplicaNum),
+        new MigrationCost(
+            MIGRATION_ELAPSED_TIME, brokerMigrationSecond(before, after, clusterBean)),
         new MigrationCost(REPLICA_LEADERS_TO_ADDED, migrateInLeader),
         new MigrationCost(REPLICA_LEADERS_TO_REMOVE, migrateOutLeader),
         new MigrationCost(CHANGED_REPLICAS, migrateReplicaNum));
@@ -81,6 +88,71 @@ public class MigrationCost {
   /**
    * @param before the ClusterInfo before migrated replicas
    * @param after the ClusterInfo after migrated replicas
+   * @param clusterBean cluster metrics
+   * @return estimated migrated time required by all brokers (seconds)
+   */
+  public static Map<Integer, Long> brokerMigrationSecond(
+      ClusterInfo before, ClusterInfo after, ClusterBean clusterBean) {
+    var brokerInRate =
+        before.brokers().stream()
+            .collect(
+                Collectors.toMap(
+                    Broker::id,
+                    nodeInfo ->
+                        brokerMaxRate(
+                            nodeInfo.id(),
+                            clusterBean,
+                            MigrateTimeCost.MaxReplicationInRateBean.class)));
+    var brokerOutRate =
+        before.brokers().stream()
+            .collect(
+                Collectors.toMap(
+                    Broker::id,
+                    nodeInfo ->
+                        brokerMaxRate(
+                            nodeInfo.id(),
+                            clusterBean,
+                            MigrateTimeCost.MaxReplicationOutRateBean.class)));
+    var brokerMigrateInSecond =
+        MigrationCost.recordSizeToSync(before, after).entrySet().stream()
+            .collect(
+                Collectors.toMap(
+                    Map.Entry::getKey,
+                    brokerSize ->
+                        brokerSize.getValue() / brokerInRate.get(brokerSize.getKey()).orElse(0.0)));
+    var brokerMigrateOutSecond =
+        MigrationCost.recordSizeToFetch(before, after).entrySet().stream()
+            .collect(
+                Collectors.toMap(
+                    Map.Entry::getKey,
+                    brokerSize ->
+                        brokerSize.getValue()
+                            / brokerOutRate.get(brokerSize.getKey()).orElse(0.0)));
+    return Stream.concat(before.brokers().stream(), after.brokers().stream())
+        .map(Broker::id)
+        .distinct()
+        .collect(
+            Collectors.toMap(
+                nodeId -> nodeId,
+                nodeId ->
+                    (long)
+                        Math.max(
+                            brokerMigrateInSecond.get(nodeId),
+                            brokerMigrateOutSecond.get(nodeId))));
+  }
+
+  static Optional<Double> brokerMaxRate(
+      int identity, ClusterBean clusterBean, Class<? extends HasBeanObject> statisticMetrics) {
+    return clusterBean
+        .brokerMetrics(identity, statisticMetrics)
+        .filter(b -> b instanceof HasMaxRate)
+        .map(b -> ((HasMaxRate) b).maxRate())
+        .max(Comparator.naturalOrder());
+  }
+
+  /**
+   * @param before the ClusterInfo before migrated replicas
+   * @param after the ClusterInfo after migrated replicas
    * @param migrateOut if data log need fetch from replica leader, set this true
    * @param predicate used to filter replicas
    * @param replicaFunction decide what information you want to calculate for the replica
@@ -101,7 +173,8 @@ public class MigrationCost {
                 p ->
                     dest.replicas(p).stream()
                         .filter(predicate)
-                        .filter(r -> !source.replicas(p).contains(r)))
+                        .filter(
+                            r -> source.replicas(p).stream().noneMatch(x -> checkoutSameTPR(r, x))))
             .map(
                 r -> {
                   if (migrateOut) return dest.replicaLeader(r.topicPartition()).orElse(r);
@@ -117,6 +190,10 @@ public class MigrationCost {
         .distinct()
         .parallel()
         .collect(Collectors.toMap(Function.identity(), n -> cost.getOrDefault(n, 0L)));
+  }
+
+  private static boolean checkoutSameTPR(Replica r1, Replica r2) {
+    return r1.topicPartitionReplica().equals(r2.topicPartitionReplica());
   }
 
   private static Map<Integer, Long> changedReplicaNumber(ClusterInfo before, ClusterInfo after) {

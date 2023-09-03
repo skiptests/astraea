@@ -32,7 +32,8 @@ public class SensorHandler implements Handler {
   private static final Set<String> DEFAULT_COSTS =
       Set.of(
           "org.astraea.common.cost.ReplicaLeaderCost",
-          "org.astraea.common.cost.NetworkIngressCost");
+          "org.astraea.common.cost.NetworkIngressCost",
+          "org.astraea.common.cost.PartitionMigrateTimeCost");
 
   SensorHandler(Sensors sensors) {
     this.sensors = sensors;

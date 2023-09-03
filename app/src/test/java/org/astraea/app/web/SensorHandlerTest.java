@@ -38,7 +38,7 @@ class SensorHandlerTest {
           Assertions.assertInstanceOf(
               SensorHandler.Response.class,
               defaultCostHandler.get(Channel.EMPTY).toCompletableFuture().join());
-      Assertions.assertEquals(2, defaultCostResponse.costs.size());
+      Assertions.assertEquals(3, defaultCostResponse.costs.size());
 
       var changedCostResponse =
           Assertions.assertInstanceOf(
