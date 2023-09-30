@@ -13,3 +13,7 @@ Astraea Balancer 是一個 Kafka 節點端的負載優化框架，其透過使�
 * Astraea Balancer 實驗報告
   * [實驗報告#1](experiment_1.md)
   * [實驗報告#2](experiment_2.md)
+
+## 成本估計
+
+* [搬移時間限制實驗](experiment_partitionMigrateTime.md) : kafka partition的搬移過程中會產生一些成本，在搬移前先估計出搬移partition過程中可能花費多少搬移時間，並對其做限制確保搬移不會花費超出限制的時間
